@@ -42,7 +42,7 @@
         import { 
           Mic, MicOff, Plus, Minus, Edit2, Trash2, Download, 
           X, AlertCircle, CheckCircle2, Info, Camera, Image as ImageIcon, 
-          FileText, HelpCircle, Ban, LeafyGreen, List, Eye, Search, ChevronDown, Repeat, Calendar, MapPin
+          FileText, HelpCircle, Ban, LeafyGreen, List, Eye, Search, ChevronDown, Repeat, Calendar, MapPin, BarChart3
         } from 'lucide-react';
         
         import { initializeApp } from 'firebase/app';
@@ -71,15 +71,13 @@
             console.error("Firebase initialization failed:", error);
         }
 
-        // Custom Golden Belt Logo SVG
-        const GoldenBeltLogo = ({ className }) => (
-            <svg className={className} viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <circle cx="50" cy="50" r="45" fill="#047857"/>
-                <path d="M 5 50 A 45 45 0 0 0 95 50" stroke="#F59E0B" strokeWidth="12" />
-                <path d="M 5 50 A 45 45 0 0 1 95 50" stroke="#FCD34D" strokeWidth="3" />
-                <path d="M50 12 L56 36 L80 36 L61 50 L68 74 L50 58 L32 74 L39 50 L20 36 L44 36 Z" fill="#FBBF24" stroke="#FEF3C7" strokeWidth="2" strokeLinejoin="round"/>
-            </svg>
-        );
+        // Haptic Feedback Engine
+        const triggerHaptic = (type = 'success') => {
+            if (!navigator.vibrate) return;
+            if (type === 'success') navigator.vibrate(50); 
+            else if (type === 'warning') navigator.vibrate([30, 50, 30]); 
+            else if (type === 'delete') navigator.vibrate([50, 100, 50]); 
+        };
 
         function App() {
             const [user, setUser] = useState(null);
@@ -104,7 +102,11 @@
             const [showCommandsHelp, setShowCommandsHelp] = useState(false);
             const [viewingPhoto, setViewingPhoto] = useState(null);
             const [plantToDelete, setPlantToDelete] = useState(null);
-            const [duplicateWarning, setDuplicateWarning] = useState(null); // { variety, row, position }
+            const [duplicateWarning, setDuplicateWarning] = useState(null); 
+            
+            // Tally Modal States
+            const [showStatsModal, setShowStatsModal] = useState(false);
+            const [tallySearch, setTallySearch] = useState('');
             
             // Tracking Context
             const [lastEnteredVariety, setLastEnteredVariety] = useState(null);
@@ -127,18 +129,10 @@
 
             // Auth
             useEffect(() => {
-                if (!auth) {
-                    setIsLoading(false);
-                    return;
-                }
-                signInAnonymously(auth).catch((error) => {
-                    console.error("Auth error:", error);
-                    setIsLoading(false); 
-                });
-                
+                if (!auth) { setIsLoading(false); return; }
+                signInAnonymously(auth).catch((error) => { console.error("Auth error:", error); setIsLoading(false); });
                 const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
-                    setUser(currentUser);
-                    if (!currentUser) setIsLoading(false);
+                    setUser(currentUser); if (!currentUser) setIsLoading(false);
                 });
                 return () => unsubscribe();
             }, []);
@@ -146,7 +140,7 @@
             // Data Sync based on Year
             useEffect(() => {
                 if (!user || !db) return;
-                initialLoadDoneRef.current = false; // Reset smart resume for new year
+                initialLoadDoneRef.current = false; 
                 
                 const collectionName = `plants_${selectedYear}`;
                 const plantsRef = collection(db, collectionName);
@@ -163,12 +157,10 @@
                             setCurrentRow(maxRow);
                             setCurrentPosition(maxPos + 1);
                             
-                            // Set last planted variety on boot up
                             const lastPlant = plantsInMaxRow.find(p => p.position === maxPos);
                             if (lastPlant) setLastEnteredVariety(lastPlant.variety);
                         } else {
-                            setCurrentRow(1);
-                            setCurrentPosition(1);
+                            setCurrentRow(1); setCurrentPosition(1);
                         }
                         initialLoadDoneRef.current = true;
                     }
@@ -180,7 +172,29 @@
                 return () => unsubscribe();
             }, [user, selectedYear]);
 
-            // SMART DICTIONARY: Levenshtein Distance Calculation
+            // Tally Calculations (With Row Tracking)
+            const totalPlanted = useMemo(() => {
+                return plants.filter(p => p.status !== 'skipped' && p.variety.toLowerCase() !== 'empty space').length;
+            }, [plants]);
+
+            const varietyTallies = useMemo(() => {
+                const data = {};
+                plants.forEach(p => {
+                    if (p.status !== 'skipped' && p.variety.toLowerCase() !== 'empty space') {
+                        if (!data[p.variety]) data[p.variety] = { count: 0, rows: new Set() };
+                        data[p.variety].count += 1;
+                        data[p.variety].rows.add(p.row);
+                    }
+                });
+                return Object.entries(data).sort((a, b) => b[1].count - a[1].count);
+            }, [plants]);
+
+            const filteredTallies = useMemo(() => {
+                if (!tallySearch) return varietyTallies;
+                return varietyTallies.filter(([variety]) => variety.toLowerCase().includes(tallySearch.toLowerCase()));
+            }, [varietyTallies, tallySearch]);
+
+            // SMART DICTIONARY
             const getLevenshteinDistance = (a, b) => {
                 const matrix = [];
                 for (let i = 0; i <= b.length; i++) { matrix[i] = [i]; }
@@ -202,21 +216,22 @@
                 for (let existing of uniqueVarieties) {
                     if (existing.toLowerCase() === inputVariety.toLowerCase()) return existing;
                     const distance = getLevenshteinDistance(inputVariety.toLowerCase(), existing.toLowerCase());
-                    // If word is somewhat long and very close in spelling, auto-correct it
-                    if (distance <= 2 && existing.length > 4) {
-                        return existing;
-                    }
+                    if (distance <= 2 && existing.length > 4) return existing;
                 }
                 return inputVariety;
+            };
+
+            const formatTitleCase = (text) => {
+                return text.replace(/\b\w/g, (char, index, str) => {
+                    if (index > 0 && str[index - 1] === "'") return char.toLowerCase();
+                    return char.toUpperCase();
+                });
             };
 
             // Speech Rec
             useEffect(() => {
                 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-                if (!SpeechRecognition) {
-                    setSpeechSupported(false);
-                    return;
-                }
+                if (!SpeechRecognition) { setSpeechSupported(false); return; }
 
                 const recognition = new SpeechRecognition();
                 recognition.continuous = false; 
@@ -231,17 +246,14 @@
 
                 recognition.onerror = (event) => {
                     if (event.error !== 'no-speech') {
-                        showFeedback(`Microphone error: ${event.error}`, 'error');
-                        forceStopMic();
+                        showFeedback(`Microphone error: ${event.error}`, 'error'); forceStopMic();
                     }
                 };
 
                 recognition.onend = () => setIsListening(false);
                 recognitionRef.current = recognition;
 
-                return () => {
-                    if (recognitionRef.current) recognitionRef.current.stop();
-                };
+                return () => { if (recognitionRef.current) recognitionRef.current.stop(); };
             }, [currentRow, currentPosition, plants, lastEnteredVariety]);
 
             const forceStopMic = () => {
@@ -251,25 +263,16 @@
 
             const showFeedback = (message, type) => {
                 setFeedback({ message, type });
-                setTimeout(() => setFeedback({ message: '', type: '' }), 4000);
+                setTimeout(() => setFeedback({ message: '', type: '' }), 3000);
             };
 
             const toggleListening = () => {
-                if (!speechSupported) {
-                    showFeedback('Voice not supported on this browser.', 'error');
-                    return;
-                }
+                if (!speechSupported) { showFeedback('Voice not supported on this browser.', 'error'); return; }
                 if (isListening) {
-                    forceStopMic();
-                    showFeedback('Voice tracking paused.', 'info');
+                    forceStopMic(); showFeedback('Voice tracking paused.', 'info');
                 } else {
-                    try {
-                        recognitionRef.current.start();
-                        setIsListening(true);
-                        showFeedback('Listening...', 'info');
-                    } catch (e) {
-                        console.error(e);
-                    }
+                    try { recognitionRef.current.start(); setIsListening(true); } 
+                    catch (e) { console.error(e); }
                 }
             };
 
@@ -282,34 +285,22 @@
             };
 
             const processTranscript = (rawText) => {
-                const wordToNum = {
-                    'one': 1, 'two': 2, 'to': 2, 'too': 2, 'three': 3, 'four': 4, 'for': 4,
-                    'five': 5, 'six': 6, 'seven': 7, 'eight': 8, 'nine': 9, 'ten': 10,
-                    'eleven': 11, 'twelve': 12, 'thirteen': 13, 'fourteen': 14, 'fifteen': 15,
-                    'sixteen': 16, 'seventeen': 17, 'eighteen': 18, 'nineteen': 19, 'twenty': 20
-                };
-                const normalizedText = rawText.toLowerCase().split(' ').map(w => wordToNum[w] !== undefined ? wordToNum[w] : w).join(' ').trim();
+                const wordToNum = { 'one':1,'two':2,'to':2,'too':2,'three':3,'four':4,'for':4,'five':5,'six':6,'seven':7,'eight':8,'nine':9,'ten':10 };
+                const lowerText = rawText.toLowerCase().trim();
+                const normalizedText = lowerText.split(' ').map(w => wordToNum[w] !== undefined ? wordToNum[w] : w).join(' ');
 
-                if (normalizedText.match(/^(next|advance)\s*row$/)) {
-                    handleRowChange(currentRow + 1);
-                    showFeedback(`Moved to Row ${currentRow + 1}`, 'info');
-                    return forceStopMic();
+                if (normalizedText.includes('next row') || normalizedText.includes('advance row')) {
+                    handleRowChange(currentRow + 1); showFeedback(`Moved to Row ${currentRow + 1}`, 'info'); triggerHaptic(); return forceStopMic();
                 }
 
-                const rowMatch = normalizedText.match(/^(?:go to|jump to|move to|change to|set)?\s*row\s*(\d+)$/);
+                const rowMatch = normalizedText.match(/(?:go to|jump to|move to|change to|set)?\s*row\s*(\d+)/);
                 if (rowMatch) {
-                    const r = parseInt(rowMatch[1], 10);
-                    handleRowChange(r);
-                    showFeedback(`Moved to Row ${r}`, 'info');
-                    return forceStopMic();
+                    const r = parseInt(rowMatch[1], 10); handleRowChange(r); showFeedback(`Moved to Row ${r}`, 'info'); triggerHaptic(); return forceStopMic();
                 }
 
-                const posMatch = normalizedText.match(/^(?:go to|jump to|move to|change to|set)?\s*(?:plant|position|number|num)\s*(\d+)$/);
+                const posMatch = normalizedText.match(/(?:go to|jump to|move to|change to|set)?\s*(?:plant|position|number|num)\s*(\d+)/);
                 if (posMatch) {
-                    const p = parseInt(posMatch[1], 10);
-                    setCurrentPosition(p);
-                    showFeedback(`Jumped to Plant ${p}`, 'info');
-                    return forceStopMic();
+                    const p = parseInt(posMatch[1], 10); setCurrentPosition(p); showFeedback(`Jumped to Plant ${p}`, 'info'); triggerHaptic(); return forceStopMic();
                 }
 
                 if (normalizedText.match(/^(skip space|empty space|leave empty|mark empty)$/)) {
@@ -319,45 +310,53 @@
 
                 if (normalizedText.match(/^(did not grow|didn't grow|failed|dead|mark failed)$/)) {
                     const existing = plants.find(p => p.row === currentRow && p.position === currentPosition);
-                    if (existing) {
-                        attemptSavePlant({ ...existing, status: 'failed' });
-                    } else {
-                        showFeedback(`No plant at Position ${currentPosition} to fail.`, 'error');
-                    }
+                    if (existing) attemptSavePlant({ ...existing, status: 'failed' });
+                    else showFeedback(`No plant at Position ${currentPosition} to fail.`, 'error');
                     return forceStopMic();
                 }
 
-                let variety = rawText.replace(/^(is|called|variety)\s+/i, '').trim().replace(/\b\w/g, l => l.toUpperCase());
+                let variety = rawText.replace(/^(is|called|variety)\s+/i, '').trim();
+
+                const spellMatch = variety.match(/\bspell(?:ed)?\s+(.+)$/i);
+                
+                if (spellMatch) {
+                    const spelledTokens = spellMatch[1].toLowerCase().split(/\s+/);
+                    let spelledVariety = '';
+                    
+                    spelledTokens.forEach(token => {
+                        if (token === 'space') spelledVariety += ' ';
+                        else if (token === 'apostrophe') spelledVariety += "'";
+                        else if (token === 'hyphen' || token === 'dash') spelledVariety += "-";
+                        else if (token.length === 1) spelledVariety += token; 
+                        else spelledVariety += token; 
+                    });
+                    
+                    variety = formatTitleCase(spelledVariety).trim();
+                } else {
+                    variety = formatTitleCase(variety);
+                    variety = autocorrectVariety(variety);
+                }
 
                 if (variety) {
-                    variety = autocorrectVariety(variety);
                     attemptSavePlant({ row: currentRow, position: currentPosition, variety, status: 'active' });
                     forceStopMic(); 
                 } else {
-                    showFeedback(`Didn't catch the variety name.`, 'error');
-                    forceStopMic();
+                    showFeedback(`Didn't catch the variety name.`, 'error'); forceStopMic();
                 }
             };
 
-            // CORE SAVING LOGIC WITH SMART DUPLICATE CHECK AND INSERT SHIFTING
             const attemptSavePlant = (plantData, bypassDuplicateCheck = false) => {
                 const isNewPlant = !plantData.id;
                 
-                // 1. Smart Duplicate Check (Only triggers if we moved on, then came back)
                 if (isNewPlant && !bypassDuplicateCheck && plantData.status === 'active' && plantData.variety !== 'Empty Space') {
                     const existsInDb = plants.filter(p => p.variety === plantData.variety && p.status === 'active');
                     if (existsInDb.length > 0 && lastEnteredVariety !== plantData.variety) {
-                        // Halt and show warning!
                         const existingRows = [...new Set(existsInDb.map(p => p.row))].join(', ');
-                        setDuplicateWarning({ 
-                            ...plantData, 
-                            existingCount: existsInDb.length,
-                            existingRows: existingRows 
-                        });
+                        setDuplicateWarning({ ...plantData, existingCount: existsInDb.length, existingRows: existingRows });
+                        triggerHaptic('warning');
                         return;
                     }
                 }
-
                 executeSaveToCloud(plantData);
             };
 
@@ -372,7 +371,6 @@
                 const batch = writeBatch(db);
                 let currentPlantsState = [...plants];
 
-                // 2. INSERT SHIFT LOGIC: If a plant is already in this physical slot, push everything down!
                 if (isNewPlant || editingPlant?.position !== plantData.position) {
                     const slotOccupied = plants.some(p => p.row === plantData.row && p.position === plantData.position && p.id !== idToUse);
                     if (slotOccupied) {
@@ -381,11 +379,10 @@
                             const ref = doc(db, collectionName, p.id);
                             batch.update(ref, { position: p.position + 1 });
                         });
-                        showFeedback(`Inserted at ${plantData.position}. Row shifted up!`, 'info');
+                        showFeedback(`Inserted. Row shifted up!`, 'info');
                     }
                 }
 
-                // 3. Save the actual plant
                 const newDocRef = doc(db, collectionName, idToUse);
                 batch.set(newDocRef, dataToSave);
                 
@@ -397,82 +394,61 @@
                         if (plantData.status === 'active' && plantData.variety !== 'Empty Space') {
                             setLastEnteredVariety(plantData.variety);
                             showFeedback(`Saved: ${plantData.variety}`, 'success');
+                            triggerHaptic('success');
                         }
                     }
                 } catch (err) {
-                    console.error("Save failed:", err);
-                    showFeedback("Error saving to database.", "error");
+                    console.error("Save failed:", err); showFeedback("Error saving to database.", "error");
                 }
                 
-                setIsManualModalOpen(false);
-                setDuplicateWarning(null);
-                setEditingPlant(null);
+                setIsManualModalOpen(false); setDuplicateWarning(null); setEditingPlant(null);
             };
 
-            // CORE DELETE LOGIC WITH SHIFTING
             const confirmDeletePlant = async () => {
                 if (!plantToDelete || !user || !db) return;
                 
                 const { id, row, position } = plantToDelete;
                 const collectionName = `plants_${selectedYear}`;
                 const batch = writeBatch(db);
-                
                 let currentPlantsState = plants.filter(p => p.id !== id);
 
-                // Find all plants physically behind this one in the same row, and shift them back 1 space
                 const plantsToShift = currentPlantsState.filter(p => p.row === row && p.position > position);
                 plantsToShift.forEach(p => {
                     const ref = doc(db, collectionName, p.id);
                     batch.update(ref, { position: p.position - 1 });
                 });
 
-                // Delete target
                 const targetRef = doc(db, collectionName, id);
                 batch.delete(targetRef);
 
                 try {
                     await batch.commit();
-                    showFeedback('Plant deleted and row shifted down.', 'success');
+                    showFeedback('Plant deleted. Row shifted down.', 'success');
+                    triggerHaptic('delete');
                     setPlantToDelete(null);
                     
-                    // If we deleted the end of the line, mathematically walk the tracker back down so there are no gaps
                     const remainingInRow = currentPlantsState.filter(p => p.row === row);
                     const newMaxPos = remainingInRow.length > 0 ? Math.max(...remainingInRow.map(p => p.position)) : 0;
                     
-                    if (currentRow === row && currentPosition > newMaxPos + 1) {
-                        setCurrentPosition(newMaxPos + 1);
-                    }
-                    
-                } catch (err) {
-                    console.error("Delete failed:", err);
-                }
+                    if (currentRow === row && currentPosition > newMaxPos + 1) setCurrentPosition(newMaxPos + 1);
+                } catch (err) { console.error("Delete failed:", err); }
             };
 
-            // Quick Duplicate Action
             const duplicateLastPlant = () => {
                 const previousPlant = plants.find(p => p.row === currentRow && p.position === currentPosition - 1);
-                if (previousPlant) {
-                    attemptSavePlant({ row: currentRow, position: currentPosition, variety: previousPlant.variety, status: 'active' }, true);
-                }
+                if (previousPlant) attemptSavePlant({ row: currentRow, position: currentPosition, variety: previousPlant.variety, status: 'active' }, true);
             };
 
             const handlePhotoCapture = async (e, plant) => {
                 const file = e.target.files[0];
                 if (!file) return;
-
-                setIsCompressing(true);
-                showFeedback('Optimizing photo...', 'info');
-
+                setIsCompressing(true); showFeedback('Optimizing photo...', 'info');
                 try {
                     const compressedDataUrl = await compressImage(file);
                     executeSaveToCloud({ ...plant, photo: compressedDataUrl });
-                    showFeedback('Photo attached successfully!', 'success');
-                } catch (err) {
-                    showFeedback('Failed to process photo.', 'error');
-                } finally {
-                    setIsCompressing(false);
-                    e.target.value = ''; 
-                }
+                    showFeedback('Photo attached successfully!', 'success'); triggerHaptic();
+                } catch (err) { showFeedback('Failed to process photo.', 'error'); } 
+                finally { setIsCompressing(false); e.target.value = ''; }
             };
 
             const compressImage = (file) => {
@@ -482,86 +458,61 @@
                         const img = new Image();
                         img.onload = () => {
                             const canvas = document.createElement('canvas');
-                            const MAX_WIDTH = 800;
-                            const scaleSize = MAX_WIDTH / img.width;
-                            canvas.width = MAX_WIDTH;
-                            canvas.height = img.height * scaleSize;
+                            const scaleSize = 800 / img.width;
+                            canvas.width = 800; canvas.height = img.height * scaleSize;
                             const ctx = canvas.getContext('2d');
                             ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
                             resolve(canvas.toDataURL('image/jpeg', 0.6));
                         };
-                        img.onerror = reject;
-                        img.src = event.target.result;
+                        img.onerror = reject; img.src = event.target.result;
                     };
-                    reader.onerror = reject;
-                    reader.readAsDataURL(file);
+                    reader.onerror = reject; reader.readAsDataURL(file);
                 });
             };
 
             const exportToCSV = () => {
                 if (plants.length === 0) return alert("No data to export!");
-                
                 const sortedPlants = [...plants].sort((a, b) => a.row !== b.row ? a.row - b.row : a.position - b.position);
-
                 const headers = ['Row', 'Position', 'Variety', 'Status', 'Notes', 'Has Photo', 'Date Logged'];
                 const rows = sortedPlants.map(p => [
-                    p.row, 
-                    p.position, 
-                    `"${p.variety || ''}"`, 
-                    p.status || 'active',
-                    `"${(p.notes || '').replace(/"/g, '""')}"`, 
-                    p.photo ? 'Yes' : 'No',
-                    new Date(parseInt(p.id)).toLocaleDateString()
+                    p.row, p.position, `"${p.variety || ''}"`, p.status || 'active', `"${(p.notes || '').replace(/"/g, '""')}"`, p.photo ? 'Yes' : 'No', new Date(parseInt(p.id)).toLocaleDateString()
                 ]);
-
                 const csvContent = "data:text/csv;charset=utf-8," + [headers.join(","), ...rows.map(e => e.join(","))].join("\n");
                 const encodedUri = encodeURI(csvContent);
                 const link = document.createElement("a");
                 link.setAttribute("href", encodedUri);
                 link.setAttribute("download", `golden_belt_${selectedYear}.csv`);
-                document.body.appendChild(link);
-                link.click();
-                document.body.removeChild(link);
+                document.body.appendChild(link); link.click(); document.body.removeChild(link);
             };
 
             const filteredPlants = useMemo(() => {
                 if (!searchQuery) return plants;
                 const lowerQuery = searchQuery.toLowerCase();
-                return plants.filter(p => 
-                    p.variety.toLowerCase().includes(lowerQuery) || 
-                    (p.notes && p.notes.toLowerCase().includes(lowerQuery))
-                );
+                return plants.filter(p => p.variety.toLowerCase().includes(lowerQuery) || (p.notes && p.notes.toLowerCase().includes(lowerQuery)));
             }, [plants, searchQuery]);
 
             const groupedPlants = useMemo(() => {
                 const groups = filteredPlants.reduce((acc, plant) => {
                     if (!acc[plant.row]) acc[plant.row] = [];
-                    acc[plant.row].push(plant);
-                    return acc;
+                    acc[plant.row].push(plant); return acc;
                 }, {});
                 Object.keys(groups).forEach(row => groups[row].sort((a, b) => a.position - b.position));
                 return groups;
             }, [filteredPlants]);
 
-            const availableRows = useMemo(() => {
-                return [...new Set(plants.map(p => p.row))].sort((a, b) => a - b);
-            }, [plants]);
-
-            const rowsToRender = searchQuery 
-                ? Object.keys(groupedPlants).sort((a,b) => Number(a) - Number(b))
-                : (viewMode === 'current' 
-                    ? (groupedPlants[currentRow] ? [currentRow.toString()] : []) 
-                    : Object.keys(groupedPlants).sort((a,b) => Number(a) - Number(b)));
-
-            // Compute last planted data for the duplicate button
+            const availableRows = useMemo(() => [...new Set(plants.map(p => p.row))].sort((a, b) => a - b), [plants]);
+            const rowsToRender = searchQuery ? Object.keys(groupedPlants).sort((a,b) => Number(a) - Number(b)) : (viewMode === 'current' ? (groupedPlants[currentRow] ? [currentRow.toString()] : []) : Object.keys(groupedPlants).sort((a,b) => Number(a) - Number(b)));
+            
+            // For Duplicate Button
             const previousPlant = plants.find(p => p.row === currentRow && p.position === currentPosition - 1);
+            const previousPlantTotal = previousPlant ? plants.filter(p => p.variety === previousPlant.variety && p.status === 'active').length : 0;
 
             if (isLoading) {
                 return (
                     <div className="min-h-screen bg-[#f4f1ea] flex items-center justify-center font-sans text-emerald-900">
                         <div className="animate-pulse flex flex-col items-center">
-                            <GoldenBeltLogo className="w-16 h-16 mb-4 drop-shadow-lg" />
-                            <p className="font-medium tracking-wide">Connecting to {selectedYear} Database...</p>
+                            <img src="icon.png" alt="Golden Belt Logo" className="w-20 h-20 mb-4 drop-shadow-lg rounded-full" onError={(e) => { e.target.style.display = 'none'; }} />
+                            <p className="font-medium tracking-wide mt-2">Connecting to {selectedYear} Database...</p>
                         </div>
                     </div>
                 );
@@ -570,27 +521,48 @@
             return (
                 <div className="min-h-screen bg-[#f4f1ea] font-sans text-slate-800 flex flex-col overflow-hidden">
                     
+                    {/* NOTIFICATION TOAST - MOVED TO TOP */}
+                    <div className="fixed top-20 left-0 right-0 flex justify-center pointer-events-none z-[100] px-4">
+                        {feedback.message && (
+                            <div className={`flex items-center gap-2 px-4 py-2.5 rounded-2xl text-sm font-bold shadow-2xl animate-in fade-in slide-in-from-top-4 ${
+                                feedback.type === 'success' ? 'bg-emerald-600 text-white' :
+                                feedback.type === 'error' ? 'bg-red-600 text-white' : 'bg-slate-800 text-white'
+                            }`}>
+                                {feedback.type === 'success' && <CheckCircle2 className="w-5 h-5 shrink-0" />}
+                                {feedback.type === 'error' && <AlertCircle className="w-5 h-5 shrink-0" />}
+                                {feedback.type === 'info' && <Info className="w-5 h-5 shrink-0" />}
+                                {feedback.message}
+                            </div>
+                        )}
+                    </div>
+
                     <header className="bg-emerald-900 text-white p-3 shadow-md z-20 shrink-0">
                         <div className="max-w-4xl mx-auto flex justify-between items-center">
                             <div className="flex items-center gap-2.5">
-                                <GoldenBeltLogo className="w-7 h-7 drop-shadow-md" />
+                                <img src="icon.png" alt="Logo" className="w-9 h-9 rounded-full border border-emerald-700 shadow-sm object-cover bg-white" onError={(e) => { e.target.style.display = 'none'; }} />
                                 <div>
                                     <h1 className="text-lg font-bold tracking-wide leading-tight text-emerald-50">Golden Belt</h1>
-                                    <p className="text-[10px] text-amber-400 font-semibold tracking-widest uppercase leading-none">Dahlia Farm</p>
+                                    <div className="flex items-center gap-1">
+                                        <p className="text-[10px] text-emerald-200 font-semibold tracking-widest uppercase leading-none">Dahlia Farm</p>
+                                        <button 
+                                            onClick={() => setShowStatsModal(true)}
+                                            className="text-[10px] text-amber-400 font-bold tracking-widest uppercase leading-none bg-emerald-800/80 px-1.5 py-0.5 rounded-full ml-1 hover:bg-emerald-700 transition active:scale-95"
+                                            title="View Harvest Tally"
+                                        >
+                                            • {totalPlanted} PLANTED
+                                        </button>
+                                    </div>
                                 </div>
                             </div>
                             
                             <div className="flex items-center gap-2">
-                                {/* YEAR SELECTOR */}
                                 <div className="relative">
                                     <select 
                                         value={selectedYear} 
                                         onChange={(e) => setSelectedYear(e.target.value)}
                                         className="appearance-none bg-emerald-800 text-emerald-50 font-bold text-xs py-1.5 pl-2 pr-6 rounded-lg border border-emerald-700 focus:outline-none focus:ring-1 focus:ring-amber-400"
                                     >
-                                        {availableYears.map(year => (
-                                            <option key={year} value={year}>{year}</option>
-                                        ))}
+                                        {availableYears.map(year => <option key={year} value={year}>{year}</option>)}
                                     </select>
                                     <Calendar className="absolute right-1.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-emerald-300 pointer-events-none" />
                                 </div>
@@ -611,17 +583,10 @@
                             <div className="relative flex-1">
                                 <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
                                 <input 
-                                    type="text" 
-                                    placeholder="Search variety..." 
-                                    value={searchQuery}
-                                    onChange={(e) => setSearchQuery(e.target.value)}
+                                    type="text" placeholder="Search variety..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)}
                                     className="w-full pl-8 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-amber-400 focus:bg-white transition-colors"
                                 />
-                                {searchQuery && (
-                                    <button onClick={() => setSearchQuery('')} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600">
-                                        <X className="w-3.5 h-3.5" />
-                                    </button>
-                                )}
+                                {searchQuery && <button onClick={() => setSearchQuery('')} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"><X className="w-3.5 h-3.5" /></button>}
                             </div>
 
                             <div className="relative w-36">
@@ -629,18 +594,12 @@
                                     value={viewMode === 'current' && !searchQuery ? currentRow : ''}
                                     onChange={(e) => {
                                         const r = parseInt(e.target.value, 10);
-                                        if(r) {
-                                            handleRowChange(r);
-                                            setViewMode('current');
-                                            setSearchQuery('');
-                                        }
+                                        if(r) { handleRowChange(r); setViewMode('current'); setSearchQuery(''); }
                                     }}
                                     className="w-full appearance-none bg-emerald-50 border border-emerald-200 text-emerald-800 font-medium text-sm rounded-lg pl-3 pr-8 py-2 focus:outline-none focus:ring-2 focus:ring-emerald-500 cursor-pointer"
                                 >
                                     <option value="" disabled>Jump Row...</option>
-                                    {availableRows.map(r => (
-                                        <option key={r} value={r}>Row {r}</option>
-                                    ))}
+                                    {availableRows.map(r => <option key={r} value={r}>Row {r}</option>)}
                                 </select>
                                 <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-emerald-600 pointer-events-none" />
                             </div>
@@ -661,9 +620,9 @@
                             <div className="bg-emerald-50 rounded-xl p-4 mb-6 border border-emerald-100 text-sm animate-in fade-in slide-in-from-top-2">
                                 <h3 className="font-bold text-emerald-900 mb-2 border-b border-emerald-200 pb-1">Smart Voice Features:</h3>
                                 <ul className="space-y-1.5 text-emerald-800">
-                                    <li><strong className="text-emerald-900">Auto-Correct:</strong> Will fix minor typos to match known varieties.</li>
+                                    <li><strong className="text-emerald-900">Custom Spelling:</strong> Say "Spell" then the letters! (e.g. <i>"Genie's incredible spell j e a n n i e apostrophe s space i n c r e d i b a l l"</i>)</li>
                                     <li><strong className="text-emerald-900">Shift Logic:</strong> Manually inserting a plant in a filled position pushes the rest of the row up. Deleting shifts them down.</li>
-                                    <li><strong className="text-emerald-900">"[Variety]"</strong> - Logs plant & turns off mic</li>
+                                    <li><strong className="text-emerald-900">"Next row"</strong> - Moves tracker to the next row</li>
                                     <li><strong className="text-emerald-900">"Empty Space"</strong> / <strong className="text-emerald-900">"Did not grow"</strong></li>
                                 </ul>
                             </div>
@@ -673,9 +632,7 @@
                             {rowsToRender.length === 0 ? (
                                 <div className="text-center py-12 bg-white rounded-2xl border border-dashed border-emerald-200 text-emerald-600/60 mt-4">
                                     <LeafyGreen className="w-12 h-12 mx-auto mb-3 opacity-50 text-emerald-700" />
-                                    <p className="font-medium text-emerald-800">
-                                        {searchQuery ? 'No plants found.' : `Row ${currentRow} is empty.`}
-                                    </p>
+                                    <p className="font-medium text-emerald-800">{searchQuery ? 'No plants found.' : `Row ${currentRow} is empty.`}</p>
                                 </div>
                             ) : (
                                 rowsToRender.map(rowNum => (
@@ -698,9 +655,7 @@
                                                         isJustAdded ? 'bg-emerald-50/50 border-l-4 border-amber-400' :
                                                         'hover:bg-slate-50 border-l-4 border-transparent'}
                                                     `}>
-                                                        
                                                         <div className="flex items-start sm:items-center gap-4 flex-1">
-                                                            
                                                             <div className={`w-14 h-10 rounded-xl flex flex-col items-center justify-center font-bold shrink-0 mt-1 sm:mt-0 shadow-sm border
                                                                 ${isSkipped ? 'bg-slate-200 text-slate-500 border-slate-300' :
                                                                 isFailed ? 'bg-red-100 text-red-700 border-red-200' :
@@ -726,9 +681,7 @@
                                                                         </button>
                                                                     )}
                                                                 </div>
-                                                                
                                                                 {isFailed && <p className="text-xs text-red-600 font-medium mt-0.5">Did not grow</p>}
-                                                                
                                                                 {plant.notes && (
                                                                     <div className="flex items-start gap-1.5 mt-1.5 text-sm text-slate-600 bg-white p-2.5 rounded-lg border border-slate-200 shadow-sm">
                                                                         <FileText className="w-4 h-4 mt-0.5 shrink-0 text-slate-400" />
@@ -739,23 +692,13 @@
                                                         </div>
 
                                                         <div className="flex items-center gap-1 self-end sm:self-auto shrink-0 bg-white sm:bg-transparent p-1 sm:p-0 rounded-lg shadow-sm sm:shadow-none border border-slate-100 sm:border-none">
-                                                            
-                                                            <div className={`relative flex items-center gap-1 p-2 rounded-lg transition overflow-hidden cursor-pointer ${isSkipped ? 'opacity-50 cursor-not-allowed' : 'text-emerald-600 hover:bg-emerald-50'}`} title={isSkipped ? "Cannot add photo to skipped space" : "Add Photo"}>
+                                                            <div className={`relative flex items-center gap-1 p-2 rounded-lg transition overflow-hidden cursor-pointer ${isSkipped ? 'opacity-50 cursor-not-allowed' : 'text-emerald-600 hover:bg-emerald-50'}`}>
                                                                 <Camera className="w-5 h-5 relative z-10" />
-                                                                <span className="text-sm font-medium sm:hidden relative z-10">Photo</span>
-                                                                <input 
-                                                                    type="file" 
-                                                                    accept="image/*" 
-                                                                    capture="environment" 
-                                                                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-20" 
-                                                                    disabled={isSkipped} 
-                                                                    onChange={(e) => handlePhotoCapture(e, plant)} 
-                                                                />
+                                                                <input type="file" accept="image/*" capture="environment" className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-20" disabled={isSkipped} onChange={(e) => handlePhotoCapture(e, plant)} />
                                                             </div>
-
                                                             <div className="w-px h-6 bg-slate-200 mx-1 hidden sm:block"></div>
-                                                            <button onClick={() => { setEditingPlant(plant); setIsManualModalOpen(true); }} className="p-2 text-slate-500 hover:text-amber-600 hover:bg-amber-50 rounded-lg transition" title="Edit Plant"><Edit2 className="w-5 h-5" /></button>
-                                                            <button onClick={() => setPlantToDelete(plant)} className="p-2 text-slate-500 hover:text-red-600 hover:bg-red-50 rounded-lg transition" title="Delete Plant"><Trash2 className="w-5 h-5" /></button>
+                                                            <button onClick={() => { setEditingPlant(plant); setIsManualModalOpen(true); }} className="p-2 text-slate-500 hover:text-amber-600 hover:bg-amber-50 rounded-lg transition"><Edit2 className="w-5 h-5" /></button>
+                                                            <button onClick={() => setPlantToDelete(plant)} className="p-2 text-slate-500 hover:text-red-600 hover:bg-red-50 rounded-lg transition"><Trash2 className="w-5 h-5" /></button>
                                                         </div>
                                                     </div>
                                                 );
@@ -768,31 +711,20 @@
                         </section>
                     </main>
 
-                    {/* Fixed Dictation Bar */}
                     <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 shadow-[0_-10px_40px_rgba(0,0,0,0.08)] z-40 pb-6 pt-3 px-4 sm:pb-4">
-                        <div className="absolute left-0 right-0 -top-14 flex justify-center pointer-events-none">
-                            {feedback.message && (
-                                <div className={`flex items-center gap-2 px-4 py-2 rounded-full text-sm font-medium shadow-lg animate-in fade-in slide-in-from-bottom-2 ${
-                                    feedback.type === 'success' ? 'bg-emerald-600 text-white' :
-                                    feedback.type === 'error' ? 'bg-red-600 text-white' : 'bg-slate-800 text-white'
-                                }`}>
-                                    {feedback.type === 'success' && <CheckCircle2 className="w-4 h-4 shrink-0" />}
-                                    {feedback.type === 'error' && <AlertCircle className="w-4 h-4 shrink-0" />}
-                                    {feedback.type === 'info' && <Info className="w-4 h-4 shrink-0" />}
-                                    {feedback.message}
-                                </div>
-                            )}
-                        </div>
-
-                        {/* DUPLICATE LAST BUTTON */}
+                        
+                        {/* DUPLICATE LAST BUTTON - NOW WITH LIVE COUNTER */}
                         {previousPlant && previousPlant.variety !== 'Empty Space' && (
                             <div className="absolute left-0 right-0 -top-[70px] flex justify-center">
                                 <button 
                                     onClick={duplicateLastPlant}
-                                    className="flex items-center gap-1.5 bg-amber-400 hover:bg-amber-500 text-amber-950 font-bold px-4 py-1.5 rounded-full shadow-md transition-transform active:scale-95 border border-amber-500"
+                                    className="flex items-center gap-2 bg-amber-400 hover:bg-amber-500 text-amber-950 px-5 py-2 rounded-full shadow-md transition-transform active:scale-95 border border-amber-500"
                                 >
-                                    <Repeat className="w-3.5 h-3.5" />
-                                    <span>Duplicate +1</span>
+                                    <Repeat className="w-5 h-5" />
+                                    <div className="flex flex-col items-start text-left leading-tight">
+                                        <span className="font-black text-sm">Duplicate +1</span>
+                                        <span className="text-[10px] uppercase tracking-wider font-bold opacity-80">Total so far: {previousPlantTotal}</span>
+                                    </div>
                                 </button>
                             </div>
                         )}
@@ -837,7 +769,60 @@
 
                     {/* MODALS */}
                     
-                    {/* 1. Manual Insert/Edit Modal */}
+                    {/* ADVANCED HARVEST TALLY MODAL */}
+                    {showStatsModal && (
+                        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+                            <div className="bg-white rounded-2xl w-full max-w-sm shadow-xl overflow-hidden animate-in zoom-in-95 flex flex-col max-h-[85vh]">
+                                <div className="flex justify-between items-center p-4 border-b bg-emerald-50 shrink-0">
+                                    <div className="flex items-center gap-2 text-emerald-900">
+                                        <BarChart3 className="w-5 h-5" />
+                                        <h3 className="font-bold text-lg">{selectedYear} Harvest Tally</h3>
+                                    </div>
+                                    <button onClick={() => {setShowStatsModal(false); setTallySearch('');}} className="text-slate-400 hover:text-slate-600"><X className="w-5 h-5" /></button>
+                                </div>
+                                <div className="p-4 bg-emerald-800 text-white text-center shrink-0">
+                                    <span className="text-4xl font-black">{totalPlanted}</span>
+                                    <p className="text-xs text-emerald-200 font-bold tracking-widest uppercase">Total Tubers Planted</p>
+                                </div>
+                                
+                                <div className="p-3 bg-slate-50 border-b border-slate-100 shrink-0">
+                                    <div className="relative">
+                                        <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                                        <input 
+                                            type="text" placeholder="Find variety..." 
+                                            value={tallySearch} onChange={(e) => setTallySearch(e.target.value)}
+                                            className="w-full pl-8 pr-3 py-2 bg-white border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                                        />
+                                    </div>
+                                </div>
+
+                                <div className="overflow-y-auto p-0 flex-1">
+                                    {filteredTallies.length === 0 ? (
+                                        <p className="text-center text-slate-500 italic py-8">No varieties found.</p>
+                                    ) : (
+                                        <ul className="divide-y divide-slate-100">
+                                            {filteredTallies.map(([variety, data], idx) => (
+                                                <li key={idx} className="p-4 flex justify-between items-center hover:bg-slate-50 transition">
+                                                    <div>
+                                                        <span className="font-bold text-slate-800 block">{variety}</span>
+                                                        <span className="text-xs text-slate-500 font-medium flex items-center gap-1 mt-0.5">
+                                                            <MapPin className="w-3 h-3" /> Row(s): {Array.from(data.rows).sort((a,b)=>a-b).join(', ')}
+                                                        </span>
+                                                    </div>
+                                                    <span className="bg-emerald-100 text-emerald-800 font-black px-3 py-1.5 rounded-xl text-sm border border-emerald-200">{data.count}</span>
+                                                </li>
+                                            ))}
+                                        </ul>
+                                    )}
+                                </div>
+                                <div className="p-4 border-t shrink-0">
+                                    <button onClick={() => {setShowStatsModal(false); setTallySearch('');}} className="w-full px-4 py-2.5 bg-slate-100 text-slate-700 font-bold rounded-xl hover:bg-slate-200 transition">Close Board</button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Manual Insert/Edit Modal */}
                     {isManualModalOpen && (
                         <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-4 z-50">
                             <div className="bg-white rounded-2xl w-full max-w-md shadow-xl overflow-hidden animate-in zoom-in-95">
@@ -845,7 +830,6 @@
                                     <h3 className="font-bold text-lg text-emerald-900">{editingPlant ? 'Edit Plant Details' : 'Insert Plant'}</h3>
                                     <button onClick={() => setIsManualModalOpen(false)} className="text-slate-400 hover:text-slate-600"><X className="w-5 h-5" /></button>
                                 </div>
-                                
                                 <form 
                                     className="p-4 space-y-4"
                                     onSubmit={(e) => {
@@ -854,12 +838,12 @@
                                         attemptSavePlant({
                                             row: parseInt(formData.get('row'), 10),
                                             position: parseInt(formData.get('position'), 10),
-                                            variety: formData.get('variety'),
+                                            variety: formatTitleCase(formData.get('variety')),
                                             status: formData.get('status'),
                                             notes: formData.get('notes'),
                                             photo: editingPlant?.photo || null,
                                             id: editingPlant?.id || null
-                                        }, true); // Bypass duplicate check on manual edits
+                                        }, true); 
                                     }}
                                 >
                                     {!editingPlant && (
@@ -871,43 +855,39 @@
                                     <div className="grid grid-cols-2 gap-4">
                                         <div className="space-y-1">
                                             <label className="text-sm font-medium text-slate-700">Row</label>
-                                            <input type="number" name="row" required min="1" defaultValue={editingPlant?.row || currentRow} className="w-full border border-slate-200 rounded-lg p-2.5 focus:ring-2 focus:ring-amber-500 outline-none" />
+                                            <input type="number" name="row" required min="1" defaultValue={editingPlant?.row || currentRow} className="w-full border border-slate-200 rounded-lg p-2.5 focus:ring-2 focus:ring-emerald-500 outline-none" />
                                         </div>
                                         <div className="space-y-1">
                                             <label className="text-sm font-medium text-slate-700">Position</label>
-                                            <input type="number" name="position" required min="1" defaultValue={editingPlant?.position || currentPosition} className="w-full border border-slate-200 rounded-lg p-2.5 focus:ring-2 focus:ring-amber-500 outline-none" />
+                                            <input type="number" name="position" required min="1" defaultValue={editingPlant?.position || currentPosition} className="w-full border border-slate-200 rounded-lg p-2.5 focus:ring-2 focus:ring-emerald-500 outline-none" />
                                         </div>
                                     </div>
-                                    
                                     <div className="space-y-1">
                                         <label className="text-sm font-medium text-slate-700">Variety Name</label>
-                                        <input type="text" name="variety" required defaultValue={editingPlant?.variety || ''} className="w-full border border-slate-200 rounded-lg p-2.5 focus:ring-2 focus:ring-amber-500 outline-none" placeholder="e.g. Cafe Au Lait" />
+                                        <input type="text" name="variety" required defaultValue={editingPlant?.variety || ''} className="w-full border border-slate-200 rounded-lg p-2.5 focus:ring-2 focus:ring-emerald-500 outline-none" placeholder="e.g. Cafe Au Lait" />
                                     </div>
-
                                     <div className="space-y-1">
                                         <label className="text-sm font-medium text-slate-700">Plant Status</label>
-                                        <select name="status" defaultValue={editingPlant?.status || 'active'} className="w-full border border-slate-200 rounded-lg p-2.5 focus:ring-2 focus:ring-amber-500 outline-none bg-white">
+                                        <select name="status" defaultValue={editingPlant?.status || 'active'} className="w-full border border-slate-200 rounded-lg p-2.5 focus:ring-2 focus:ring-emerald-500 outline-none bg-white">
                                             <option value="active">🌱 Healthy / Active</option>
                                             <option value="failed">❌ Did Not Grow (Failed)</option>
                                             <option value="skipped">🪨 Empty Space (Skipped)</option>
                                         </select>
                                     </div>
-
                                     <div className="space-y-1">
-                                        <label className="text-sm font-medium text-slate-700 flex items-center justify-between">Additional Notes</label>
-                                        <textarea name="notes" rows="2" defaultValue={editingPlant?.notes || ''} className="w-full border border-slate-200 rounded-lg p-2.5 focus:ring-2 focus:ring-amber-500 outline-none resize-none"></textarea>
+                                        <label className="text-sm font-medium text-slate-700">Additional Notes</label>
+                                        <textarea name="notes" rows="2" defaultValue={editingPlant?.notes || ''} className="w-full border border-slate-200 rounded-lg p-2.5 focus:ring-2 focus:ring-emerald-500 outline-none resize-none"></textarea>
                                     </div>
-                                    
                                     <div className="pt-2 flex gap-3">
-                                        <button type="button" onClick={() => setIsManualModalOpen(false)} className="flex-1 px-4 py-2 border border-slate-200 text-slate-700 rounded-xl hover:bg-slate-50 transition">Cancel</button>
-                                        <button type="submit" className="flex-1 px-4 py-2 bg-emerald-700 text-white rounded-xl hover:bg-emerald-800 transition font-medium">Save & Shift</button>
+                                        <button type="button" onClick={() => setIsManualModalOpen(false)} className="flex-1 px-4 py-2 border border-slate-200 text-slate-700 rounded-xl hover:bg-slate-50 transition font-medium">Cancel</button>
+                                        <button type="submit" className="flex-1 px-4 py-2 bg-emerald-700 text-white rounded-xl hover:bg-emerald-800 transition font-bold shadow-md">Save & Shift</button>
                                     </div>
                                 </form>
                             </div>
                         </div>
                     )}
 
-                    {/* 2. Shift Delete Confirmation Modal */}
+                    {/* Shift Delete Confirmation Modal */}
                     {plantToDelete && (
                         <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-4 z-50">
                             <div className="bg-white rounded-2xl w-full max-w-sm shadow-xl overflow-hidden animate-in zoom-in-95 p-5 text-center">
@@ -924,13 +904,13 @@
                                 </p>
                                 <div className="flex gap-3">
                                     <button onClick={() => setPlantToDelete(null)} className="flex-1 px-4 py-2 border border-slate-200 text-slate-700 rounded-xl hover:bg-slate-50 transition font-medium">Cancel</button>
-                                    <button onClick={confirmDeletePlant} className="flex-1 px-4 py-2 bg-red-600 text-white rounded-xl hover:bg-red-700 transition font-medium shadow-md shadow-red-200">Delete & Shift</button>
+                                    <button onClick={confirmDeletePlant} className="flex-1 px-4 py-2 bg-red-600 text-white rounded-xl hover:bg-red-700 transition font-bold shadow-md shadow-red-200">Delete & Shift</button>
                                 </div>
                             </div>
                         </div>
                     )}
 
-                    {/* 3. Smart Duplicate Warning Modal */}
+                    {/* Smart Duplicate Warning Modal */}
                     {duplicateWarning && (
                         <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-4 z-50">
                             <div className="bg-white rounded-2xl w-full max-w-sm shadow-xl overflow-hidden animate-in zoom-in-95 p-5 text-center border-t-8 border-amber-400">
